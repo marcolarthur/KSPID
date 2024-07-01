@@ -71,7 +71,7 @@ def burn_time_vertically():
 
 
 def burn_time_horizontally():
-    t = abs(horizontal_speed() / ((available_thrust() * 1.9) / mass()))
+    t = abs(horizontal_speed() / ((available_thrust() * 0.9) / mass()))
     return round(t, 0)
 
 
