@@ -3,51 +3,41 @@ import krpcConnection
 
 conn = krpcConnection.get_conn()
 vessel = krpcConnection.get_vessel()
+
 orbit_reference_frame = vessel.orbit.body.reference_frame
 flight = vessel.flight(orbit_reference_frame)
-vertical_speed = conn.add_stream(getattr, flight, 'vertical_speed')
-horizontal_speed = conn.add_stream(getattr, flight, 'horizontal_speed')
+
 surface_altitude = conn.add_stream(getattr, flight, 'surface_altitude')
+horizontal_speed = conn.add_stream(getattr, flight, 'horizontal_speed')
+vertical_speed = conn.add_stream(getattr, flight, 'vertical_speed')
+drag_vector = conn.add_stream(getattr, flight, 'drag')
+
 gravity = conn.add_stream(getattr, vessel.orbit.body, 'surface_gravity')
-atmosphere_density = conn.add_stream(getattr, flight, 'atmosphere_density')
-drag_coefficient = conn.add_stream(getattr, flight, 'drag_coefficient')
 available_thrust = conn.add_stream(getattr, vessel, 'available_thrust')
 mass = conn.add_stream(getattr, vessel, 'mass')
-center_of_mass_tuple = conn.add_stream(getattr, flight, 'center_of_mass')
-drag_vector = conn.add_stream(getattr, flight, 'drag')
 
 
 def real_altitude():
-    offset = 0
-    for part in vessel.parts.all:
-        pos_y = part.position(vessel.reference_frame)[1]
-        if pos_y < offset:
-            offset = pos_y
-    return surface_altitude() - abs(offset)
-
-
-def cross_sectional_area():
-    return bounding_box()[1][0] * bounding_box()[1][2]
-
-
-def bounding_box():
-    return vessel.bounding_box(orbit_reference_frame)
+    try:
+        offset = 0
+        for part in vessel.parts.all:
+            pos_y = part.position(vessel.reference_frame)[1]
+            if pos_y < offset:
+                offset = pos_y
+        return surface_altitude() - abs(offset)
+    except Exception:
+        return surface_altitude()
 
 
 def terminal_velocity():
     if flight.terminal_velocity != 0:
         return flight.terminal_velocity
-
-    if atmosphere_density() == 0 or drag_coefficient() == 0:
-        return vertical_speed() + math.sqrt(2 * mass() * gravity())
-
-    return vertical_speed() + math.sqrt(
-        (2 * mass() * gravity()) / (atmosphere_density() * cross_sectional_area * drag_coefficient()))
+    else:
+        return math.sqrt(vertical_speed() ** 2 + 2 * gravity() * real_altitude())
 
 
 def acceleration_needed():
-    return (acceleration_needed_horizontally()
-            + acceleration_needed_vertically())
+    return math.sqrt(acceleration_needed_horizontally() ** 2 + acceleration_needed_vertically() ** 2)
 
 
 def acceleration_needed_vertically():
@@ -57,7 +47,9 @@ def acceleration_needed_vertically():
 
 
 def acceleration_needed_horizontally():
-    return horizontal_speed() ** 2 / (2 * real_altitude())
+    if burn_time_horizontally() == 0:
+        return 0
+    return horizontal_speed() / burn_time_horizontally()
 
 
 def burn_time_needed():
@@ -67,17 +59,17 @@ def burn_time_needed():
 
 
 def burn_time_vertically():
-    t = abs(vertical_speed() / ((available_thrust() * 0.9) / mass()))
+    t = abs(vertical_speed() / ((available_thrust()) / mass()))
     return round(t, 0)
 
 
 def burn_time_horizontally():
-    t = abs(horizontal_speed() / ((available_thrust() * 0.9) / mass()))
+    t = abs(horizontal_speed() / ((available_thrust()) / mass()))
     return round(t, 0)
 
 
 def time_to_impact_vertically():
-    t = (vertical_speed() + math.sqrt(vertical_speed() ** 2 + 2 * gravity() * real_altitude())) / gravity()
+    t = abs(2 * real_altitude() / terminal_velocity())
     return round(t, 0)
 
 
@@ -122,29 +114,16 @@ def print_telemetry(ti, tb):
     print(f'Burn in: T{t_signal(ti, tb)} {abs(ti - tb)} s')
 
 
-def print_aero_breaking(ti, tb):
+def print_aero_breaking():
     print(f'')
-    print(f'Burn in: T{t_signal(ti, tb)} {abs(ti - tb)} s '
-          f'but the drag is enough to slow down the {vessel.name} to a safe speed')
+    print(f'The {vessel.name} is aero breaking')
 
 
 def t_signal(t1, t2):
     return '+' if t1 - t2 < 0 else '-'
 
 
-if is_landed():
-    print(f'{vessel.name} is already landed')
-    exit()
-
-print('Vertical Speed: %.2f m/s' % vertical_speed())
-print('Horizontal Speed: %.2f m/s' % horizontal_speed())
-print('Surface Altitude: %.2f m' % surface_altitude())
-
-if vertical_speed() < 0.0:
-    set_vessel_to_retrograde()
-    print(f'{vessel.name} is falling')
-else:
-    print(f'Waiting for the {vessel.name} to start falling')
+def await_until_is_falling():
     vertical_speed_expression = conn.get_call(getattr, flight, 'vertical_speed')
     expr = conn.krpc.Expression.less_than(
         conn.krpc.Expression.call(vertical_speed_expression),
@@ -156,14 +135,14 @@ else:
     set_vessel_to_retrograde()
     print(f'The {vessel.name} is falling')
 
-if surface_altitude() > 10000:
-    print(f'Waiting for the {vessel.name} to be below 10 km')
-    surface_altitude_expression = conn.get_call(getattr, flight, 'surface_altitude')
+
+def await_until_below_altitude(altitude):
+    altitude_expression = conn.get_call(getattr, flight, 'surface_altitude')
     expr = conn.krpc.Expression.less_than(
-        conn.krpc.Expression.call(surface_altitude_expression),
-        conn.krpc.Expression.constant_double(10000.0)
+        conn.krpc.Expression.call(altitude_expression),
+        conn.krpc.Expression.constant_double(altitude)
     )
-    is_below_10km = conn.krpc.add_event(expr)
-    with is_below_10km.condition:
-        is_below_10km.wait()
-    print(f'The {vessel.name} is below 10 km')
+    is_below_altitude = conn.krpc.add_event(expr)
+    with is_below_altitude.condition:
+        is_below_altitude.wait()
+    print(f'The {vessel.name} is below {altitude} m')
