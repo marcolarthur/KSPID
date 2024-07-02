@@ -1,11 +1,12 @@
 import math
-import time
 import krpcConnection
 
 conn = krpcConnection.get_conn()
 vessel = krpcConnection.get_vessel()
 orbit_reference_frame = vessel.orbit.body.reference_frame
 flight = vessel.flight(orbit_reference_frame)
+vertical_speed = conn.add_stream(getattr, flight, 'vertical_speed')
+horizontal_speed = conn.add_stream(getattr, flight, 'horizontal_speed')
 surface_altitude = conn.add_stream(getattr, flight, 'surface_altitude')
 gravity = conn.add_stream(getattr, vessel.orbit.body, 'surface_gravity')
 atmosphere_density = conn.add_stream(getattr, flight, 'atmosphere_density')
@@ -97,23 +98,12 @@ def is_landed():
             vessel.situation == conn.space_center.VesselSituation.pre_launch)
 
 
-def reset_sas_rcs():
-    vessel.control.sas = False
-    vessel.control.rcs = False
-    time.sleep(0.1)
-    vessel.control.sas = True
-    vessel.control.rcs = True
-    time.sleep(0.1)
-
-
 def set_vessel_to_retrograde():
-    reset_sas_rcs()
     vessel.control.speed_mode = conn.space_center.SpeedMode.surface
     vessel.control.sas_mode = conn.space_center.SASMode.retrograde
 
 
 def set_vessel_to_stability():
-    reset_sas_rcs()
     vessel.control.speed_mode = conn.space_center.SpeedMode.surface
     vessel.control.sas_mode = conn.space_center.SASMode.stability_assist
 
@@ -124,18 +114,31 @@ def point_vessel_straight_up():
     vessel.auto_pilot.target_pitch_and_heading(90, 90)
 
 
-def t_signal():
-    return '+' if time_to_impact_vertically() - burn_time_needed() < 0 else '-'
+def print_telemetry(ti, tb):
+    print(f'')
+    print(f'Acceleration needed: {acceleration_needed():.2f} m/s²')
+    print(f'Impact in: {ti} s')
+    print(f'Burn for: {tb} s')
+    print(f'Burn in: T{t_signal(ti, tb)} {abs(ti - tb)} s')
+
+
+def print_aero_breaking(ti, tb):
+    print(f'')
+    print(f'Burn in: T{t_signal(ti, tb)} {abs(ti - tb)} s '
+          f'but the drag is enough to slow down the {vessel.name} to a safe speed')
+
+
+def t_signal(t1, t2):
+    return '+' if t1 - t2 < 0 else '-'
 
 
 if is_landed():
     print(f'{vessel.name} is already landed')
     exit()
 
-vertical_speed = conn.add_stream(getattr, flight, 'vertical_speed')
 print('Vertical Speed: %.2f m/s' % vertical_speed())
-horizontal_speed = conn.add_stream(getattr, flight, 'horizontal_speed')
 print('Horizontal Speed: %.2f m/s' % horizontal_speed())
+print('Surface Altitude: %.2f m' % surface_altitude())
 
 if vertical_speed() < 0.0:
     set_vessel_to_retrograde()
@@ -152,3 +155,15 @@ else:
         is_falling.wait()
     set_vessel_to_retrograde()
     print(f'The {vessel.name} is falling')
+
+if surface_altitude() > 10000:
+    print(f'Waiting for the {vessel.name} to be below 10 km')
+    surface_altitude_expression = conn.get_call(getattr, flight, 'surface_altitude')
+    expr = conn.krpc.Expression.less_than(
+        conn.krpc.Expression.call(surface_altitude_expression),
+        conn.krpc.Expression.constant_double(10000.0)
+    )
+    is_below_10km = conn.krpc.add_event(expr)
+    with is_below_10km.condition:
+        is_below_10km.wait()
+    print(f'The {vessel.name} is below 10 km')

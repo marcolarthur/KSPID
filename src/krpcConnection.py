@@ -19,7 +19,11 @@ def connect_to_krpc():
 conn = connect_to_krpc()
 
 vessel = conn.space_center.active_vessel
-
+vessel.control.sas = False
+vessel.control.rcs = False
+time.sleep(0.1)
+vessel.control.sas = True
+vessel.control.rcs = True
 time.sleep(1)
 
 
